@@ -1,0 +1,12 @@
+hydra-core
+omegaconf
+tqdm
+numpy
+openai
+torch
+transformers
+websockets
+requests
+aiohttp
+peft
+accelerate
