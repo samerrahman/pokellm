@@ -1,4 +1,4 @@
-name_or_path: meta-llama/Meta-Llama-3-8B
+name_or_path: NousResearch/Meta-Llama-3-8B
 tokenizer_name_or_path: null
 archive: null
 block_name: LlamaDecoderLayer
