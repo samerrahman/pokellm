@@ -10,3 +10,7 @@ requests
 aiohttp
 peft
 accelerate
+gymnasium
+tensor_parallel
+wandb
+datasets

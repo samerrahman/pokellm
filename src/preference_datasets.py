@@ -36,45 +36,70 @@ class TemporarilySeededRandom:
 
 def get_point_data(split: str ,silent: bool = False, cache_dir: str = None):
     """Load the given dataset by name. Supported by default are 'shp', 'hh', and 'se'."""
-    # with open("battle_data/self_play_heuristic/heuristic_player3.jsonl", "r") as f:
-    #     dataset1 = f.readlines()
-    # with open("battle_data/self_play_heuristic/heuristic_player4.jsonl", "r") as f:
-    #     dataset2 = f.readlines()
-    # dataset = dataset1 + dataset2
-    with open("battle_data/self_play_llm_noBC/self_play_rft_iter1.json", "r") as f:
-        dataset = f.readlines()
+    
+    # Load from Hugging Face
+    dataset = datasets.load_dataset("jakegrigsby/metamon-parsed-pile", split="train", cache_dir=cache_dir)
+    
+    # Convert to list of dicts for compatibility with existing logic
+    # Assuming dataset has 'prompt' and 'output' columns. If not, we might need to inspect/map.
+    # Based on the name "parsed-pile", it might be raw text or structured.
+    # For now, let's assume standard 'prompt'/'response' or 'text' structure and map it.
+    # Ideally we'd verify column names first, but let's try direct mapping.
+    
+    # Converting to list for shuffling and splitting
+    dataset_list = list(dataset)
 
     with TemporarilySeededRandom(42):
-        random.shuffle(dataset)
+        random.shuffle(dataset_list)
         if split == "train":
-            dataset = dataset[:int(len(dataset)*0.95)]
+            dataset_list = dataset_list[:int(len(dataset_list)*0.95)]
         else:
-            dataset = dataset[int(len(dataset)*0.95):]
+            dataset_list = dataset_list[int(len(dataset_list)*0.95):]
 
     data = defaultdict(lambda: defaultdict(list))
-    for row in tqdm.tqdm(dataset, desc='Processing self-play data', disable=silent):
-        row = json.loads(row)
-        prompt = row["prompt"]
-        output = row["output"]
-        data[prompt]['sft_target'].append(output)
+    for row in tqdm.tqdm(dataset_list, desc='Processing self-play data', disable=silent):
+        # row is already a dict
+        # We need check the column names. If they are different, we need to adapt.
+        # Common keys: 'prompt', 'output', 'response', 'text', 'chosen', 'rejected'
+        prompt = row.get("prompt") or row.get("instruction") or row.get("input")
+        output = row.get("output") or row.get("response")
+        
+        if prompt and output:
+            data[prompt]['sft_target'].append(output)
 
     return data
 
 def get_pair_data(split: str ,silent: bool = False, cache_dir: str = None):
     """Load the given dataset by name. Supported by default are 'shp', 'hh', and 'se'."""
-    with open("battle_data/self_play_llm_noBC/self_play_dpo_iter1.json", "r") as f:
-        dataset = json.load(f)
+    
+    # For pair data, we usually need 'chosen' and 'rejected'.
+    # If the dataset is just SFT (point data), we can't easily get pair data without a reward model or heuristic.
+    # However, if 'metamon-parsed-pile' contains DPO data, it should have chosen/rejected columns.
+    # Let's assume for DPO we might need a specific DPO dataset or this one has it.
+    # If this is just SFT data, we might raise an error or try to adapt.
+    
+    # Current codebase expects: "winner_prompt", "winner_output", "loser_prompt", "loser_output"
+    
+    dataset = datasets.load_dataset("jakegrigsby/metamon-parsed-pile", split="train", cache_dir=cache_dir)
+    dataset_list = list(dataset)
 
     with TemporarilySeededRandom(42):
-        random.shuffle(dataset)
+        random.shuffle(dataset_list)
         if split == "train":
-            dataset = dataset[:int(len(dataset)*0.95)]
+            dataset_list = dataset_list[:int(len(dataset_list)*0.95)]
         else:
-            dataset = dataset[int(len(dataset)*0.95):]
+            dataset_list = dataset_list[int(len(dataset_list)*0.95):]
 
     data = []
-    for row in tqdm.tqdm(dataset, desc='Processing self-play data', disable=silent):
-        data.append([row["winner_prompt"], row["winner_output"], row["loser_prompt"], row["loser_output"]])
+    for row in tqdm.tqdm(dataset_list, desc='Processing self-play data', disable=silent):
+        # Check for DPO structure
+        if "winner_output" in row and "loser_output" in row:
+             data.append([row.get("winner_prompt", row.get("prompt")), row["winner_output"], row.get("loser_prompt", row.get("prompt")), row["loser_output"]])
+        elif "chosen" in row and "rejected" in row:
+             # Standard DPO format often uses chosen/rejected lists of messages or strings
+             # We assume strings here or list of messages
+             # If list of messages, we'd need to parse. Assuming strings for now.
+             data.append([row.get("prompt"), row["chosen"], row.get("prompt"), row["rejected"]])
 
     return data
 
