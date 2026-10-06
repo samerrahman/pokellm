@@ -155,8 +155,10 @@ class DoublesRLEnv:
     async def run_episode(self, policy_fn) -> Dict[str, Any]:
         """Runs a single complete match and returns the full trajectory with discounted returns."""
         uid = int(time.time() * 1000) % 1000000
-        # Dedicated VGC Bot: 'aquaspaghetti' with standard competitive VGC Reg C team
-        bot_name = f"aquaspaghetti_{uid}"
+        # Showdown usernames must be <= 18 characters. "aquaspa" (7) + uid % 100000 (5) = 12 chars
+        # Or "aquaspaghetti" (13) + (uid % 1000) (3) = 17 chars (<= 18)
+        short_id = uid % 1000
+        bot_name = f"aquaspaghetti{short_id:03d}"
         agent = RLAgentDoublesPlayer(
             policy_fn=policy_fn,
             battle_format=self.format_str,
