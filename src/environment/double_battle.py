@@ -48,6 +48,10 @@ class DoubleBattle(AbstractBattle):
         # Other
         self._move_to_pokemon_id: Dict[Move, str] = {}
 
+        self.battle_msg_history = ""
+        self.pokemon_hp_log_dict = {}
+        self.speed_list = []
+
     def clear_all_boosts(self):
         for active_pokemon_group in (self.active_pokemon, self.opponent_active_pokemon):
             for active_pokemon in active_pokemon_group:
@@ -199,9 +203,14 @@ class DoubleBattle(AbstractBattle):
             if (not trapped) or self.force_switch[pokemon_index]:
                 for pokemon in side["pokemon"]:
                     if pokemon:
-                        pokemon = self._team[pokemon["ident"]]
-                        if not pokemon.active and not pokemon.fainted:
-                            self._available_switches[pokemon_index].append(pokemon)
+                        mon = self._team.get(pokemon["ident"])
+                        if mon is None:
+                            try:
+                                mon = self.get_pokemon(pokemon["ident"], force_self_team=True)
+                            except Exception:
+                                mon = None
+                        if mon and not mon.active and not mon.fainted:
+                            self._available_switches[pokemon_index].append(mon)
 
     def switch(self, pokemon_str: str, details: str, hp_status: str):
         pokemon_identifier = pokemon_str.split(":")[0][:3]
@@ -336,7 +345,7 @@ class DoubleBattle(AbstractBattle):
         :rtype: List[Optional[Pokemon]]
         """
         if self.player_role is None:
-            raise ValueError("Unable to get active_pokemon, player_role is None")
+            return [None, None]
         return self._get_active_pokemon(self._active_pokemon, self.player_role)
 
     @property
@@ -422,9 +431,7 @@ class DoubleBattle(AbstractBattle):
         :rtype: List[Optional[Pokemon]]
         """
         if self.opponent_role is None:
-            raise ValueError(
-                "Unable to get opponent_active_pokemon, opponent_role is None"
-            )
+            return [None, None]
         return self._get_active_pokemon(
             self._opponent_active_pokemon, self.opponent_role
         )

@@ -41,7 +41,7 @@ class Player(ABC):
     Base class for players.
     """
 
-    MESSAGES_TO_IGNORE = {"", "t:", "expire", "uhtmlchange"}
+    MESSAGES_TO_IGNORE = {"", "t:", "expire", "uhtmlchange", "uhtml", "html"}
 
     # When an error resulting from an invalid choice is made, the next order has this
     # chance of being showdown's default order to prevent infinite loops
@@ -530,7 +530,9 @@ class Player(ABC):
                 if split_message[2]:
                     request = orjson.loads(split_message[2])
                     battle.parse_request(request)
-                    if battle.move_on_next_request:
+                    if battle.teampreview:
+                        await self._handle_battle_request(battle, from_teampreview_request=True)
+                    elif not request.get("wait", False):
                         await self._handle_battle_request(battle)
                         battle.move_on_next_request = False
             elif split_message[1] == "win" or split_message[1] == "tie":
@@ -608,14 +610,14 @@ class Player(ABC):
                     "[Invalid choice] Can't move: You can only Terastallize once per battle."
                 ):
                     await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith("[Invalid choice]"):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
                 else:
                     self.logger.critical("Unexpected error message: %s", split_message)
             elif split_message[1] == "turn":
                 battle.parse_message(split_message)
-                await self._handle_battle_request(battle)
             elif split_message[1] == "teampreview":
                 battle.parse_message(split_message)
-                await self._handle_battle_request(battle, from_teampreview_request=True)
             elif split_message[1] == "bigerror":
                 self.logger.warning("Received 'bigerror' message: %s", split_message)
             else:
@@ -629,9 +631,14 @@ class Player(ABC):
     ):
         if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
             message = self.choose_default_move().message
-        elif battle.teampreview:
+        elif getattr(battle, "teampreview", False):
             if not from_teampreview_request:
                 return
+            battle._teampreview = False
+            message = self.teampreview(battle)
+        elif from_teampreview_request:
+            # teampreview request arrived
+            battle._teampreview = False
             message = self.teampreview(battle)
         else:
             message = self.choose_move(battle)

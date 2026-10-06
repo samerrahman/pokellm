@@ -209,12 +209,16 @@ class AbstractBattle(ABC):
         else:
             team: Dict[str, Pokemon] = self._opponent_team
 
-        if self._team_size and len(team) >= self._team_size[player_role]:
+        # In formats with team preview (like VGC bring-6-pick-4), _team_size reported by Showdown
+        # may be the number brought (4), while the roster shown at preview has all 6 mons.
+        # We allow up to max(_team_size, 6) so previewing/switching doesn't crash.
+        effective_team_size = max(self._team_size.get(player_role, 6), 6) if self._team_size else 6
+        if len(team) >= effective_team_size:
             raise ValueError(
                 "%s's team already has %d pokemons: cannot add %s to %s"
                 % (
                     player_role,
-                    self._team_size[player_role],
+                    effective_team_size,
                     identifier,
                     ", ".join(team.keys()),
                 )
@@ -679,11 +683,6 @@ class AbstractBattle(ABC):
             if len(split_message) == 6:
                 player, username, avatar, rating = split_message[2:6]
             else:
-                if not self._anybody_inactive:
-                    if self._reconnected:
-                        self._reconnected = False
-                    else:
-                        raise RuntimeError(f"Invalid player message: {split_message}")
                 return
             if username == self._player_username:
                 self._player_role = player
@@ -752,7 +751,8 @@ class AbstractBattle(ABC):
                 if pokemon in set(self.opponent_team.values()):
                     self._opponent_can_terrastallize = False
         else:
-            raise NotImplementedError(split_message)
+            if self.logger:
+                self.logger.warning("Unrecognized message in battle %s: %s", self.battle_tag, split_message)
 
     @abstractmethod
     def parse_request(self, request: Dict[str, Any]):

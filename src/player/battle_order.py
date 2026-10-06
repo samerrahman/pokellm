@@ -42,12 +42,12 @@ class BattleOrder:
         elif isinstance(self.order, Pokemon):
             return f"/choose switch {self.order.species}"
         else:
-            return ""
+            return self.DEFAULT_ORDER
 
 
 class DefaultBattleOrder(BattleOrder):
     def __init__(self, *args: Any, **kwargs: Any):
-        pass
+        super().__init__(order=None)
 
     @property
     def message(self) -> str:

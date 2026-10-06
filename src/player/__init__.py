@@ -20,6 +20,13 @@ from src.utils.env_utils import (
 )
 from src.client import Client
 
+from src.player.doubles_baselines import (
+    RandomDoublesPlayer,
+    SimpleHeuristicsDoublesPlayer,
+)
+from src.player.doubles_player import DoublesPlayer
+from src.player.doubles_llm_player import DoublesLLMPlayer
+
 __all__ = [
     "openai_api",
     "ActType",
@@ -32,6 +39,10 @@ __all__ = [
     "RandomPlayer",
     "GPTPlayer",
     "LLMPlayer",
+    "DoublesPlayer",
+    "DoublesLLMPlayer",
+    "RandomDoublesPlayer",
+    "SimpleHeuristicsDoublesPlayer",
     "cross_evaluate",
     "background_cross_evaluate",
     "background_evaluate_player",
