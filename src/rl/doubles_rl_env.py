@@ -46,22 +46,22 @@ class RLAgentDoublesPlayer(DoublesPlayer):
         self.last_opp_fainted_count = opp_fainted
         self.last_my_fainted_count = my_fainted
 
-        # 2. Reward for stat boosts on stats that matter (threshold: base_stat >= 80 or high damage/speed)
-        # Check active Pokemon for positive stat stages (atk, spa, spe, def, spd)
+        # 2. Reward for stat boosts on stats that matter based on actual post-EV stats:
+        # At Lv 50 VGC, high offensive/defensive/speed stats with full EVs are >= 130
+        # (e.g. Flutter Mane 195 Spe / 164 SpA, Chi-Yu 192 SpA, Iron Hands 198 Atk).
         boost_reward = 0.0
         for slot_idx in (0, 1):
             mon = battle.active_pokemon[slot_idx]
             if mon and not mon.fainted and hasattr(mon, "boosts"):
-                base_stats = mon.base_stats or {}
+                actual_stats = mon.stats or {}
                 for stat_name, boost_stage in mon.boosts.items():
                     if boost_stage > 0:
-                        # Check if this stat matters for this Pokemon (base stat >= 80)
-                        # e.g., atk >= 80 for physical attackers, spa >= 80 for special, spe >= 80 for fast mons
                         stat_key = stat_name.lower()
-                        # Map showdown boost names to base stat keys
                         mapped_stat = {"atk": "atk", "def": "def", "spa": "spa", "spd": "spd", "spe": "spe"}.get(stat_key)
-                        if mapped_stat and base_stats.get(mapped_stat, 0) >= 80:
-                            # Small shaping reward per relevant boost stage
+                        # Check actual after-EVs stat value (threshold >= 130 at Lv 50)
+                        curr_stat_val = actual_stats.get(mapped_stat)
+                        if curr_stat_val is not None and curr_stat_val >= 130:
+                            # Shaping reward per relevant post-EV boost stage
                             boost_reward += 0.05 * boost_stage
         
         step_reward += boost_reward
@@ -155,11 +155,13 @@ class DoublesRLEnv:
     async def run_episode(self, policy_fn) -> Dict[str, Any]:
         """Runs a single complete match and returns the full trajectory with discounted returns."""
         uid = int(time.time() * 1000) % 1000000
+        # Dedicated VGC Bot: 'aquaspaghetti' with standard competitive VGC Reg C team
+        bot_name = f"aquaspaghetti_{uid}"
         agent = RLAgentDoublesPlayer(
             policy_fn=policy_fn,
             battle_format=self.format_str,
             team=self.team_1,
-            account_configuration=AccountConfiguration(f"RLAgent_{uid}", ""),
+            account_configuration=AccountConfiguration(bot_name, ""),
             max_concurrent_battles=1
         )
         opp = self.create_opponent(uid)
