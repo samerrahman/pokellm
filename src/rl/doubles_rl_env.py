@@ -14,7 +14,9 @@ from src.player.doubles_baselines import SimpleHeuristicsDoublesPlayer, RandomDo
 from src.player.battle_order import BattleOrder, DoubleBattleOrder, DefaultBattleOrder
 from src.client.account_configuration import AccountConfiguration
 from src.environment.double_battle import DoubleBattle
+from src.environment.move_category import MoveCategory
 from src.data.static.vgc_teams import VGC_REG_C_TEAM_1, VGC_REG_C_TEAM_2
+from src.rl.damage_calc import check_ko_threshold_shift, estimate_damage
 
 class RLAgentDoublesPlayer(DoublesPlayer):
     """
@@ -46,25 +48,38 @@ class RLAgentDoublesPlayer(DoublesPlayer):
         self.last_opp_fainted_count = opp_fainted
         self.last_my_fainted_count = my_fainted
 
-        # 2. Reward for stat boosts on stats that matter based on actual post-EV stats:
-        # At Lv 50 VGC, high offensive/defensive/speed stats with full EVs are >= 130
-        # (e.g. Flutter Mane 195 Spe / 164 SpA, Chi-Yu 192 SpA, Iron Hands 198 Atk).
+        # 2. Reward for stat boosts on premade sets + (n-1) Hit-KO threshold shift bonus:
+        # Since teams use tournament-standard competitive sets, all positive stat boosts are advantageous.
+        # Furthermore, if an offensive boost shifts an opposing Pokemon into an (n-1) hit-KO range (e.g. 2HKO -> OHKO),
+        # an additional tactical KO threshold reward is granted.
         boost_reward = 0.0
+        ko_threshold_reward = 0.0
+
         for slot_idx in (0, 1):
             mon = battle.active_pokemon[slot_idx]
             if mon and not mon.fainted and hasattr(mon, "boosts"):
-                actual_stats = mon.stats or {}
                 for stat_name, boost_stage in mon.boosts.items():
                     if boost_stage > 0:
-                        stat_key = stat_name.lower()
-                        mapped_stat = {"atk": "atk", "def": "def", "spa": "spa", "spd": "spd", "spe": "spe"}.get(stat_key)
-                        # Check actual after-EVs stat value (threshold >= 130 at Lv 50)
-                        curr_stat_val = actual_stats.get(mapped_stat)
-                        if curr_stat_val is not None and curr_stat_val >= 130:
-                            # Shaping reward per relevant post-EV boost stage
-                            boost_reward += 0.05 * boost_stage
+                        # Base reward for accumulating positive boosts (+0.04 per stage)
+                        boost_reward += 0.04 * boost_stage
+
+                        # If offensive boost, check if it enables (n-1) hit-KO range against active opponents
+                        if stat_name.lower() in ("atk", "spa"):
+                            available_moves = battle.available_moves[slot_idx] if slot_idx < len(battle.available_moves) else []
+                            for move in available_moves:
+                                if move.category != MoveCategory.STATUS and move.base_power > 0:
+                                    is_physical = (move.category == MoveCategory.PHYSICAL)
+                                    if (is_physical and stat_name.lower() == "atk") or (not is_physical and stat_name.lower() == "spa"):
+                                        for opp in battle.opponent_active_pokemon:
+                                            if opp and not opp.fainted:
+                                                is_spread = (move.target in ("allAdjacentFoes", "allAdjacent"))
+                                                shift = check_ko_threshold_shift(mon, opp, move, is_spread=is_spread)
+                                                if shift["improved"]:
+                                                    # Bonus: +0.10 for shifting an opponent to (n-1) hit KO range (+0.15 if shifting directly to OHKO)
+                                                    ko_threshold_reward += 0.15 if shift["is_ohko_now"] else 0.10
+                                                    break # avoid overcounting multiple moves on the same opponent
         
-        step_reward += boost_reward
+        step_reward += (boost_reward + ko_threshold_reward)
 
         if self.policy_fn is not None:
             order, action_info = self.policy_fn(state_prompt, battle)
@@ -118,6 +133,7 @@ class RLAgentDoublesPlayer(DoublesPlayer):
             "action_text": action_info.get("action_text", ""),
             "step_reward": step_reward,
             "boost_reward": boost_reward,
+            "ko_threshold_reward": ko_threshold_reward,
             "supereffective_reward": supereffective_reward,
             "turn": battle.turn
         })

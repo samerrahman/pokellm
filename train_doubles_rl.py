@@ -219,25 +219,27 @@ async def train_rl(
             else:
                 advantages = returns_tensor
 
-            # Compute log probs for each step
-            log_probs = []
-            for prompt, cand_tokens, chosen_idx in zip(batch_prompts, batch_candidate_tokens, batch_chosen_indices):
+            # Compute log probs and accumulate gradients per transition to keep memory strictly constant
+            total_loss = 0.0
+            n_steps = len(batch_prompts)
+            for idx, (prompt, cand_tokens, chosen_idx) in enumerate(zip(batch_prompts, batch_candidate_tokens, batch_chosen_indices)):
                 inp = tokenizer.encode(prompt, return_tensors="pt").to(device)
                 out = model(inp)
                 last_logits = out.logits[0, -1, :] # [vocab_size]
                 cand_logits = torch.stack([last_logits[tok] for tok in cand_tokens])
                 probs = torch.softmax(cand_logits, dim=0)
                 log_p = torch.log(probs[chosen_idx] + 1e-10)
-                log_probs.append(log_p)
+                adv = advantages[idx]
+                step_loss = -(log_p * adv) / n_steps
+                step_loss.backward()
+                total_loss += step_loss.item()
+                del out, inp, last_logits, cand_logits, probs, log_p, step_loss
 
-            log_probs_tensor = torch.stack(log_probs)
-            loss = -(log_probs_tensor * advantages).mean()
-            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            loss_val = loss.item()
+            loss_val = total_loss
 
-            del log_probs_tensor, returns_tensor, advantages, loss
+            del returns_tensor, advantages
             gc.collect()
         else:
             loss_val = 0.0
