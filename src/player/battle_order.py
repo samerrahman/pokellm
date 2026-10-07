@@ -67,17 +67,15 @@ class DoubleBattleOrder(BattleOrder):
     @property
     def message(self) -> str:
         if self.first_order and self.second_order:
-            return (
-                self.first_order.message
-                + ", "
-                + self.second_order.message.replace("/choose ", "")
-            )
+            part1 = self.first_order.message
+            part2 = self.second_order.message.replace("/choose ", "")
+            return f"{part1}, {part2}"
         elif self.first_order:
             return self.first_order.message + ", default"
         elif self.second_order:
-            return self.second_order.message + ", default"
+            return "/choose default, " + self.second_order.message.replace("/choose ", "")
         else:
-            return self.DEFAULT_ORDER
+            return "/choose default, default"
 
     @staticmethod
     def join_orders(first_orders: List[BattleOrder], second_orders: List[BattleOrder]):

@@ -112,8 +112,10 @@ class RLAgentDoublesPlayer(DoublesPlayer):
 
         self.episode_transitions.append({
             "state_prompt": state_prompt,
+            "compact_prompt": action_info.get("compact_prompt", ""),
+            "chosen_action_idx": action_info.get("chosen_action_idx", 0),
+            "candidate_token_ids": action_info.get("candidate_token_ids", []),
             "action_text": action_info.get("action_text", ""),
-            "log_prob": action_info.get("log_prob", None),
             "step_reward": step_reward,
             "boost_reward": boost_reward,
             "supereffective_reward": supereffective_reward,
@@ -139,50 +141,48 @@ class DoublesRLEnv:
         self.team_1 = team_1
         self.team_2 = team_2
         self.opponent_type = opponent_type
-
-    def create_opponent(self, uid: int):
-        cfg = AccountConfiguration(f"Opp_{uid}", "")
-        if self.opponent_type == "stall":
-            opp = StallDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=cfg, max_concurrent_battles=1)
-        elif self.opponent_type == "heuristics":
-            opp = SimpleHeuristicsDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=cfg, max_concurrent_battles=1)
-        else:
-            opp = RandomDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=cfg, max_concurrent_battles=1)
         
-        opp.teampreview = lambda b: "/team 1234"
-        return opp
+        # Maintain persistent player instances on the Showdown server
+        uid = int(time.time() * 10) % 10000
+        bot_name = f"aquaspaghetti{uid:04d}"
+        opp_name = f"Opponent{uid:04d}"
 
-    async def run_episode(self, policy_fn) -> Dict[str, Any]:
-        """Runs a single complete match and returns the full trajectory with discounted returns."""
-        uid = int(time.time() * 1000) % 1000000
-        # Showdown usernames must be <= 18 characters. "aquaspa" (7) + uid % 100000 (5) = 12 chars
-        # Or "aquaspaghetti" (13) + (uid % 1000) (3) = 17 chars (<= 18)
-        short_id = uid % 1000
-        bot_name = f"aquaspaghetti{short_id:03d}"
-        agent = RLAgentDoublesPlayer(
-            policy_fn=policy_fn,
+        self.agent = RLAgentDoublesPlayer(
+            policy_fn=None,
             battle_format=self.format_str,
             team=self.team_1,
             account_configuration=AccountConfiguration(bot_name, ""),
             max_concurrent_battles=1
         )
-        opp = self.create_opponent(uid)
 
-        await agent.battle_against(opp, n_battles=1)
+        if self.opponent_type == "stall":
+            self.opp = StallDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
+        elif self.opponent_type == "heuristics":
+            self.opp = SimpleHeuristicsDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
+        else:
+            self.opp = RandomDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
+        
+        self.opp.teampreview = lambda b: "/team 1234"
 
-        # Compute terminal reward
-        won = False
-        turns = 0
-        for b in agent.battles.values():
-            won = bool(b.won)
-            turns = b.turn
+    async def run_episode(self, policy_fn) -> Dict[str, Any]:
+        """Runs a single complete match using persistent connected players and returns trajectory."""
+        self.agent.policy_fn = policy_fn
+        self.agent.episode_transitions = []
+        self.agent.last_opp_fainted_count = 0
+        self.agent.last_my_fainted_count = 0
+
+        # Run 1 match against persistent opponent
+        await self.agent.battle_against(self.opp, n_battles=1)
+
+        # Get the latest battle outcome
+        latest_battle = list(self.agent.battles.values())[-1]
+        won = bool(latest_battle.won)
+        turns = latest_battle.turn
 
         terminal_reward = 1.0 if won else -1.0
         
-        # Assign discounted returns
-        transitions = agent.episode_transitions
+        transitions = self.agent.episode_transitions
         if transitions:
-            # Add terminal reward to the final step
             transitions[-1]["step_reward"] += terminal_reward
 
         return {

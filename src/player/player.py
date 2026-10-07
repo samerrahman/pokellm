@@ -630,7 +630,10 @@ class Player(ABC):
         maybe_default_order: bool = False,
     ):
         if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
-            message = self.choose_default_move().message
+            if isinstance(battle, DoubleBattle):
+                message = DoubleBattleOrder().message
+            else:
+                message = self.choose_default_move().message
         elif getattr(battle, "teampreview", False):
             if not from_teampreview_request:
                 return

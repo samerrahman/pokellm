@@ -1,9 +1,11 @@
 """
 Online Reinforcement Learning (Policy Gradient / REINFORCE) training script
-for PokéLLMon VGC Doubles bot against Heuristic Stall & Aggro opponents.
+for PokéLLM VGC Doubles bot against Heuristic Stall & Aggro opponents.
+Integrates Weights & Biases (wandb) for real-time loss, win rate, and reward tracking.
 """
 
 import os
+import gc
 import time
 import asyncio
 import torch
@@ -15,8 +17,12 @@ from src.player.doubles_player import DoublesPlayer
 from src.player.battle_order import BattleOrder, DoubleBattleOrder, DefaultBattleOrder
 from src.environment.double_battle import DoubleBattle
 
-# CPU execution is exceptionally fast for lightweight models (gpt2 forward pass ~10ms)
-# and avoids the known MPS shared/private memory pool fragmentation leak across recurring turns.
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+
 device = torch.device("cpu")
 
 def build_discrete_policy(model_name: str = "gpt2"):
@@ -27,17 +33,16 @@ def build_discrete_policy(model_name: str = "gpt2"):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
-    model.train()
+    model.eval()
     return model, tokenizer
 
 def select_action_with_policy(model, tokenizer, state_prompt: str, battle: DoubleBattle):
     """
-    Evaluates candidate legal actions and samples with temperature using the policy LM.
-    Returns (chosen_order, {'log_prob': log_prob, 'action_text': text})
+    Evaluates candidate legal actions under no_grad during rollouts to prevent graph memory accumulation.
+    Returns (chosen_order, {'action_text': text, 'chosen_action_id': int, 'candidate_action_ids': list, 'compact_prompt': str})
     """
     # 0. Check forced switch
     if any(battle.force_switch):
-        # We need to send switches only for slots that must switch
         must_switches = battle.force_switch
         if sum(must_switches) == 1:
             slot_idx = 0 if must_switches[0] else 1
@@ -47,7 +52,6 @@ def select_action_with_policy(model, tokenizer, state_prompt: str, battle: Doubl
             else:
                 candidate_orders = [DefaultBattleOrder()]
         else:
-            # Both slots must switch
             switches_0 = battle.available_switches[0]
             switches_1 = battle.available_switches[1]
             pair_orders = []
@@ -58,7 +62,6 @@ def select_action_with_policy(model, tokenizer, state_prompt: str, battle: Doubl
             candidate_orders = pair_orders if pair_orders else [DefaultBattleOrder()]
     else:
         # Standard double battle turn
-        candidate_orders = []
         slot_orders = [[], []]
         for slot_idx in (0, 1):
             mon = battle.active_pokemon[slot_idx]
@@ -78,11 +81,10 @@ def select_action_with_policy(model, tokenizer, state_prompt: str, battle: Doubl
             for s in switches:
                 slot_orders[slot_idx].append(BattleOrder(s))
 
-        # Pair candidates into DoubleBattleOrder
+        candidate_orders = []
         if slot_orders[0] and slot_orders[1]:
             for o1 in slot_orders[0][:4]:
                 for o2 in slot_orders[1][:4]:
-                    # Avoid duplicate switch
                     if o1.order and o2.order and hasattr(o1.order, "species") and hasattr(o2.order, "species"):
                         if o1.order.species == o2.order.species:
                             continue
@@ -95,45 +97,64 @@ def select_action_with_policy(model, tokenizer, state_prompt: str, battle: Doubl
         if not candidate_orders:
             candidate_orders = [DoubleBattleOrder()]
 
-    # Truncate prompt context for fast forward pass
     compact_prompt = state_prompt[-400:] + "\nAction: "
     input_ids = tokenizer.encode(compact_prompt, return_tensors="pt").to(device)
 
-    # Score each candidate action
     action_texts = [o.message for o in candidate_orders]
-    with torch.set_grad_enabled(model.training):
-        # Forward pass on prefix
+    
+    # Fast evaluation without retaining backward graphs during rollout
+    with torch.no_grad():
         outputs = model(input_ids)
         logits = outputs.logits[:, -1, :] # [1, vocab_size]
         
-        # Action token scoring
+        candidate_token_ids = []
         candidate_scores = []
         for text in action_texts:
             act_ids = tokenizer.encode(text, add_special_tokens=False)
-            if act_ids:
-                first_tok = act_ids[0]
-                candidate_scores.append(logits[0, first_tok])
-            else:
-                candidate_scores.append(torch.tensor(0.0, device=device))
+            tok = act_ids[0] if act_ids else tokenizer.eos_token_id
+            candidate_token_ids.append(tok)
+            candidate_scores.append(logits[0, tok].item())
 
-        scores_tensor = torch.stack(candidate_scores)
-        probs = torch.softmax(scores_tensor, dim=0)
-        dist = torch.distributions.Categorical(probs)
-        chosen_idx = dist.sample()
-        log_prob = dist.log_prob(chosen_idx)
+        scores_t = torch.tensor(candidate_scores, dtype=torch.float32)
+        probs = torch.softmax(scores_t, dim=0)
+        chosen_idx = torch.distributions.Categorical(probs).sample().item()
 
-    chosen_order = candidate_orders[chosen_idx.item()]
-    return chosen_order, {"log_prob": log_prob, "action_text": chosen_order.message}
+    chosen_order = candidate_orders[chosen_idx]
+    
+    return chosen_order, {
+        "action_text": chosen_order.message,
+        "chosen_action_idx": chosen_idx,
+        "candidate_token_ids": candidate_token_ids,
+        "compact_prompt": compact_prompt
+    }
 
 async def train_rl(
-    num_iterations: int = 10,
+    num_iterations: int = 20,
     episodes_per_iter: int = 4,
     gamma: float = 0.95,
     lr: float = 1e-4,
-    opponent_type: str = "stall"
+    opponent_type: str = "stall",
+    use_wandb: bool = True,
+    project_name: str = "pokellm-vgc"
 ):
     print(f"=== Starting Online RL Training against {opponent_type.upper()} bot ===")
     print(f"Device: {device} | Iterations: {num_iterations} | Batch size: {episodes_per_iter}")
+
+    if use_wandb and HAS_WANDB:
+        wandb.init(
+            project=project_name,
+            config={
+                "model": "gpt2",
+                "format": "gen9vgc2023regc",
+                "bot_name": "aquaspaghetti",
+                "opponent": opponent_type,
+                "iterations": num_iterations,
+                "batch_size": episodes_per_iter,
+                "learning_rate": lr,
+                "gamma": gamma
+            }
+        )
+        print("WandB run initialized successfully.")
     
     model, tokenizer = build_discrete_policy("gpt2")
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -143,87 +164,124 @@ async def train_rl(
 
     for it in range(1, num_iterations + 1):
         t_iter_start = time.time()
+        
+        # Policy wrapper ensures no grad accumulation during matches
         policy_fn = lambda s, b: select_action_with_policy(model, tokenizer, s, b)
         
-        batch_log_probs = []
+        batch_prompts = []
+        batch_candidate_tokens = []
+        batch_chosen_indices = []
         batch_returns = []
         batch_wins = 0
         total_turns = 0
+        total_dense_rewards = 0.0
 
-        # Collect rollouts
+        # 1. Rollout collection
+        model.eval()
         for ep in range(episodes_per_iter):
             episode = await env.run_episode(policy_fn)
             if episode["won"]:
                 batch_wins += 1
             total_turns += episode["turns"]
+            total_dense_rewards += episode.get("total_reward", 0.0)
 
-            # Compute discounted returns G_t
             transitions = episode["transitions"]
             g = 0.0
-            returns = []
+            ep_returns = []
             for t in reversed(transitions):
                 g = t["step_reward"] + gamma * g
-                returns.insert(0, g)
+                ep_returns.insert(0, g)
 
-            for t, ret in zip(transitions, returns):
-                if t["log_prob"] is not None:
-                    batch_log_probs.append(t["log_prob"])
+            for t, ret in zip(transitions, ep_returns):
+                if "compact_prompt" in t and "candidate_token_ids" in t:
+                    batch_prompts.append(t["compact_prompt"])
+                    batch_candidate_tokens.append(t["candidate_token_ids"])
+                    batch_chosen_indices.append(t["chosen_action_idx"])
                     batch_returns.append(ret)
+
+            del episode
+            gc.collect()
 
         win_rate = (batch_wins / episodes_per_iter) * 100
         running_win_rate = 0.7 * running_win_rate + 0.3 * win_rate if it > 1 else win_rate
+        avg_turns = total_turns / episodes_per_iter
+        avg_reward = total_dense_rewards / episodes_per_iter
 
-        # Compute Policy Gradient Loss: - E [ log_prob * (Return - baseline) ]
-        if batch_log_probs:
+        # 2. Optimization step: single forward pass with gradients on collected steps
+        if batch_prompts:
+            model.train()
+            optimizer.zero_grad()
+            
+            # Normalize returns to get advantages
             returns_tensor = torch.tensor(batch_returns, device=device, dtype=torch.float32)
-            # Normalize returns baseline
             if len(returns_tensor) > 1 and returns_tensor.std() > 1e-6:
                 advantages = (returns_tensor - returns_tensor.mean()) / (returns_tensor.std() + 1e-8)
             else:
                 advantages = returns_tensor
 
-            log_probs_tensor = torch.stack(batch_log_probs)
-            loss = -(log_probs_tensor * advantages).mean()
+            # Compute log probs for each step
+            log_probs = []
+            for prompt, cand_tokens, chosen_idx in zip(batch_prompts, batch_candidate_tokens, batch_chosen_indices):
+                inp = tokenizer.encode(prompt, return_tensors="pt").to(device)
+                out = model(inp)
+                last_logits = out.logits[0, -1, :] # [vocab_size]
+                cand_logits = torch.stack([last_logits[tok] for tok in cand_tokens])
+                probs = torch.softmax(cand_logits, dim=0)
+                log_p = torch.log(probs[chosen_idx] + 1e-10)
+                log_probs.append(log_p)
 
-            optimizer.zero_grad()
+            log_probs_tensor = torch.stack(log_probs)
+            loss = -(log_probs_tensor * advantages).mean()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             loss_val = loss.item()
-            
-            # Explicitly clean up tensors and cache
+
             del log_probs_tensor, returns_tensor, advantages, loss
+            gc.collect()
         else:
             loss_val = 0.0
-
-        del batch_log_probs, batch_returns
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
 
         dur = time.time() - t_iter_start
         print(
             f"Iter {it:02d}/{num_iterations:02d} | "
             f"WinRate: {win_rate:5.1f}% (Moving: {running_win_rate:5.1f}%) | "
-            f"Loss: {loss_val:+.4f} | Turns: {total_turns} | Time: {dur:.2f}s"
+            f"Loss: {loss_val:+.4f} | AvgTurns: {avg_turns:.1f} | AvgReward: {avg_reward:+.2f} | Time: {dur:.2f}s"
         )
 
-    # Save model
+        if use_wandb and HAS_WANDB:
+            wandb.log({
+                "iteration": it,
+                "win_rate": win_rate,
+                "running_win_rate": running_win_rate,
+                "policy_loss": loss_val,
+                "avg_turns": avg_turns,
+                "avg_reward": avg_reward,
+                "iter_time_sec": dur
+            })
+
+    # Save trained checkpoint
     save_dir = "saved_models/doubles_rl_bot"
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir)
     tokenizer.save_pretrained(save_dir)
     print(f"\nTraining completed! Model checkpoint saved to: {save_dir}")
 
+    if use_wandb and HAS_WANDB:
+        wandb.finish()
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--iterations", type=int, default=5, help="Number of RL iterations")
-    parser.add_argument("--batch_size", type=int, default=4, help="Episodes per iteration")
+    parser.add_argument("--iterations", type=int, default=10, help="Number of RL iterations")
+    parser.add_argument("--batch_size", type=int, default=2, help="Episodes per iteration")
     parser.add_argument("--opponent", type=str, default="stall", choices=["stall", "heuristics", "random"])
+    parser.add_argument("--no_wandb", action="store_true", help="Disable WandB logging")
     args = parser.parse_args()
 
     asyncio.run(train_rl(
         num_iterations=args.iterations,
         episodes_per_iter=args.batch_size,
-        opponent_type=args.opponent
+        opponent_type=args.opponent,
+        use_wandb=not args.no_wandb
     ))
