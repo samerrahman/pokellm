@@ -17,6 +17,17 @@ from src.environment.double_battle import DoubleBattle
 from src.environment.move_category import MoveCategory
 from src.data.static.vgc_teams import VGC_REG_C_TEAM_1, VGC_REG_C_TEAM_2
 from src.rl.damage_calc import check_ko_threshold_shift, estimate_damage
+from src.rl.board_evaluator import evaluate_board_state
+from src.rl.vgc_matrix_game import VGCMatrixGameSolver
+
+class NashMatrixDoublesPlayer(DoublesPlayer):
+    """Opponent player that solves the 1-step simultaneous matrix game for mixed strategy Nash equilibrium."""
+    def teampreview(self, battle: DoubleBattle) -> str:
+        return "/team 1234"
+
+    def choose_move(self, battle: DoubleBattle) -> BattleOrder:
+        order, _ = VGCMatrixGameSolver.solve_turn(battle)
+        return order
 
 class RLAgentDoublesPlayer(DoublesPlayer):
     """
@@ -123,6 +134,15 @@ class RLAgentDoublesPlayer(DoublesPlayer):
                             # +0.10 for super-effective (2x), +0.20 for double super-effective (4x)
                             supereffective_reward += 0.05 * type_mult
 
+        # 4. Positional Board Advantage Delta (Speed control, HP pressure, Threat advantage)
+        current_board_eval = evaluate_board_state(battle)
+        if getattr(self, "last_board_eval", None) is not None:
+            board_eval_delta = (current_board_eval - self.last_board_eval) * 0.01
+        else:
+            board_eval_delta = 0.0
+        self.last_board_eval = current_board_eval
+        step_reward += board_eval_delta
+
         step_reward += supereffective_reward
 
         self.episode_transitions.append({
@@ -134,6 +154,7 @@ class RLAgentDoublesPlayer(DoublesPlayer):
             "step_reward": step_reward,
             "boost_reward": boost_reward,
             "ko_threshold_reward": ko_threshold_reward,
+            "board_eval_delta": board_eval_delta,
             "supereffective_reward": supereffective_reward,
             "turn": battle.turn
         })
@@ -175,6 +196,8 @@ class DoublesRLEnv:
             self.opp = StallDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
         elif self.opponent_type == "heuristics":
             self.opp = SimpleHeuristicsDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
+        elif self.opponent_type == "nash":
+            self.opp = NashMatrixDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
         else:
             self.opp = RandomDoublesPlayer(battle_format=self.format_str, team=self.team_2, account_configuration=AccountConfiguration(opp_name, ""), max_concurrent_battles=1)
         
@@ -186,6 +209,7 @@ class DoublesRLEnv:
         self.agent.episode_transitions = []
         self.agent.last_opp_fainted_count = 0
         self.agent.last_my_fainted_count = 0
+        self.agent.last_board_eval = None
 
         # Run 1 match against persistent opponent
         await self.agent.battle_against(self.opp, n_battles=1)

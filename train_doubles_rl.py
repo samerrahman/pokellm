@@ -16,6 +16,7 @@ from src.rl.doubles_rl_env import DoublesRLEnv
 from src.player.doubles_player import DoublesPlayer
 from src.player.battle_order import BattleOrder, DoubleBattleOrder, DefaultBattleOrder
 from src.environment.double_battle import DoubleBattle
+from src.rl.vgc_matrix_game import VGCMatrixGameSolver
 
 try:
     import wandb
@@ -61,39 +62,9 @@ def select_action_with_policy(model, tokenizer, state_prompt: str, battle: Doubl
                         pair_orders.append(DoubleBattleOrder(first_order=BattleOrder(s0), second_order=BattleOrder(s1)))
             candidate_orders = pair_orders if pair_orders else [DefaultBattleOrder()]
     else:
-        # Standard double battle turn
-        slot_orders = [[], []]
-        for slot_idx in (0, 1):
-            mon = battle.active_pokemon[slot_idx]
-            if not mon or mon.fainted:
-                slot_orders[slot_idx].append(BattleOrder(None))
-                continue
-                
-            moves = battle.available_moves[slot_idx]
-            switches = battle.available_switches[slot_idx]
-            for m in moves:
-                targets = battle.get_possible_showdown_targets(m, mon)
-                if not targets:
-                    slot_orders[slot_idx].append(BattleOrder(m))
-                else:
-                    for t in targets:
-                        slot_orders[slot_idx].append(BattleOrder(m, move_target=t))
-            for s in switches:
-                slot_orders[slot_idx].append(BattleOrder(s))
-
-        candidate_orders = []
-        if slot_orders[0] and slot_orders[1]:
-            for o1 in slot_orders[0][:4]:
-                for o2 in slot_orders[1][:4]:
-                    if o1.order and o2.order and hasattr(o1.order, "species") and hasattr(o2.order, "species"):
-                        if o1.order.species == o2.order.species:
-                            continue
-                    candidate_orders.append(DoubleBattleOrder(first_order=o1, second_order=o2))
-        elif slot_orders[0]:
-            candidate_orders = [DoubleBattleOrder(first_order=o) for o in slot_orders[0][:6]]
-        elif slot_orders[1]:
-            candidate_orders = [DoubleBattleOrder(second_order=o) for o in slot_orders[1][:6]]
-
+        # Standard double battle turn: use game-theoretic tactical candidate generation
+        # prioritizes Protect, high-damage moves against active foes, and pivot switches
+        candidate_orders = VGCMatrixGameSolver.get_joint_candidates(battle, is_ally=True)
         if not candidate_orders:
             candidate_orders = [DoubleBattleOrder()]
 

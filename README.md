@@ -17,26 +17,30 @@ Most existing work in Pokémon battle AI focuses on singles formats (such as Gen
 Given the limited availability of high-quality doubles replays, the current approach explores online training against scripted baselines using a basic **Policy Gradient (REINFORCE)** loop.
 
 #### Reward Signals
-The step reward incorporates a few heuristic signals alongside the final match outcome:
+The step reward incorporates game-theoretic and tactical signals alongside the final match outcome:
 
 1. **Faints:**
    - Small positive reward when an opponent Pokémon faints.
    - Small negative penalty when an allied Pokémon faints.
 
-2. **Type Effectiveness:**
-   - Small bonus when selecting damaging moves that hit for super-effective damage based on current board state.
+2. **Damage Calculation & (n-1) Hit-KO Threshold Shifts:**
+   - Evaluates damage ranges via a Gen 9 formula and awards bonuses when offensive boosts shift active opponents into an $(n-1)$ hit-KO range (e.g. $2\text{HKO} \to \text{OHKO}$).
 
 3. **Stat Stage Boosts:**
-   - Encourages boosting stats that have significant EV investment (checking post-EV Level 50 stats $\ge 130$, like Speed or offensive stats on dedicated attackers).
+   - Encourages accumulating positive stat stages across competitive tournament-standard sets.
 
-4. **Match Outcome:**
+4. **Board Evaluation Delta:**
+   - Positional board advantage evaluating active Speed tiers, field conditions, HP distribution, and threat pressure.
+
+5. **Match Outcome:**
    - Win / loss terminal reward at the end of the battle.
 
 ---
 
 ### Opponents & Baselines
 
-To give the policy something consistent to practice against, the environment includes a few baseline bots:
+To give the policy consistent environments to practice against, the environment includes:
+- **`NashMatrixDoublesPlayer`:** A game-theoretic baseline that evaluates simultaneous $M \times N$ joint action payoff matrices and solves for a mixed-strategy Nash equilibrium.
 - **`StallDoublesPlayer`:** A defensive bot using Protect cycles, sleep disruption (Spore), and bulky pivots.
 - **`SimpleHeuristicsDoublesPlayer`:** A straightforward offensive bot that prioritizes STAB and high-damage coverage.
 - **`RandomDoublesPlayer`:** A random legal move baseline used for testing and sanity checks.

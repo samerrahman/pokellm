@@ -29,7 +29,7 @@ class SimpleHeuristicsDoublesPlayer(Player):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._gen_data = GenData(self._format_to_gen(self._format))
+        self._gen_data = GenData.from_gen(self._format_to_gen(self._format))
 
     @staticmethod
     def _format_to_gen(battle_format: str) -> int:

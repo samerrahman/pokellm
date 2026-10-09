@@ -149,3 +149,45 @@ def check_ko_threshold_shift(
         "max_dmg_after": max_1,
         "defender_hp": curr_hp
     }
+
+def estimate_double_target_damage(
+    attacker_1: Pokemon,
+    move_1: Move,
+    attacker_2: Pokemon,
+    move_2: Move,
+    defender: Pokemon,
+    defender_protecting: bool = False
+) -> Dict[str, Any]:
+    """
+    Evaluates combined focus-fire from both active Pokémon on a single target.
+    Accounts for Protect / Spiky Shield negation and calculates joint KO probability.
+    """
+    if defender_protecting:
+        return {
+            "total_min_dmg": 0,
+            "total_max_dmg": 0,
+            "total_avg_dmg": 0.0,
+            "is_ko": False,
+            "protected": True
+        }
+
+    curr_hp = defender.current_hp or defender.max_hp or 100
+
+    min_1, max_1, avg_1 = estimate_damage(attacker_1, defender, move_1) if attacker_1 and move_1 else (0, 0, 0.0)
+    min_2, max_2, avg_2 = estimate_damage(attacker_2, defender, move_2) if attacker_2 and move_2 else (0, 0, 0.0)
+
+    total_min = min_1 + min_2
+    total_max = max_1 + max_2
+    total_avg = avg_1 + avg_2
+
+    is_ko = (total_min >= curr_hp) or (total_avg >= curr_hp * 0.95)
+
+    return {
+        "total_min_dmg": total_min,
+        "total_max_dmg": total_max,
+        "total_avg_dmg": total_avg,
+        "is_ko": is_ko,
+        "protected": False,
+        "defender_hp": curr_hp
+    }
+
