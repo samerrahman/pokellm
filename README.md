@@ -1,61 +1,37 @@
 # PokéLLM
 
-An experimental project exploring reinforcement learning and language model policies for competitive **Pokémon VGC (Regulation C Doubles)** on Pokémon Showdown.
+A bot that plays competitive Pokémon VGC (Regulation C doubles) on Pokémon Showdown. I'm using it to mess around with reinforcement learning and language models as battle policies.
 
-### Background
+Most Pokémon AI projects do singles. I wanted to try doubles because it's harder:
+- you pick moves for two Pokémon at once, so there are a lot more options each turn
+- team preview, where you bring 6 and pick 4
+- doubles stuff like Protect, spread moves, redirection, and speed control matters a lot more
 
-Most existing work in Pokémon battle AI focuses on singles formats (such as Gen 8 Random Singles). This project experiments with the doubles format, which presents a few different dynamics:
-- **Two Active Pokémon:** Each turn requires choosing actions for both slots simultaneously, expanding the branching factor of candidate moves and switches.
-- **Team Preview:** Players bring 6 Pokémon and select 4, factoring in team synergy and lead positioning.
-- **Doubles Mechanics:** Moves like Protect, spread attacks, redirection, and speed control play a larger role in game flow.
-- **Test Bot:** The agent runs under the username **`aquaspaghetti`** using a standard Regulation C team.
+The bot plays as `aquaspaghetti` with a normal Reg C team.
 
----
+## How it learns
 
-### Reinforcement Learning Setup
+There aren't many good doubles replays to learn from, so right now it trains online with plain REINFORCE (policy gradient) against some scripted bots.
 
-Given the limited availability of high-quality doubles replays, the current approach explores online training against scripted baselines using a basic **Policy Gradient (REINFORCE)** loop.
+The reward is a mix of a few things:
+- a small bonus when an opponent faints, a small penalty when one of mine does
+- a bonus when a boost pushes an opponent into fewer hits to KO (like 2HKO to OHKO), using a Gen 9 damage calc
+- a bit of reward for stacking stat boosts
+- how much the board position improved (speed, field conditions, HP, threats)
+- win or loss at the end
 
-#### Reward Signals
-The step reward incorporates game-theoretic and tactical signals alongside the final match outcome:
+## Opponents
 
-1. **Faints:**
-   - Small positive reward when an opponent Pokémon faints.
-   - Small negative penalty when an allied Pokémon faints.
+- `NashMatrixDoublesPlayer` builds a payoff matrix of both players' moves each turn and plays a mixed Nash equilibrium
+- `StallDoublesPlayer` plays defensively: Protect, Spore, bulky pivots
+- `SimpleHeuristicsDoublesPlayer` just goes for STAB and big damage
+- `RandomDoublesPlayer` picks random legal moves, mostly for testing
 
-2. **Damage Calculation & (n-1) Hit-KO Threshold Shifts:**
-   - Evaluates damage ranges via a Gen 9 formula and awards bonuses when offensive boosts shift active opponents into an $(n-1)$ hit-KO range (e.g. $2\text{HKO} \to \text{OHKO}$).
+## Running it
 
-3. **Stat Stage Boosts:**
-   - Encourages accumulating positive stat stages across competitive tournament-standard sets.
+You need Python 3.10+, PyTorch 2+, transformers, peft, orjson, and Node.js 16+ for Showdown.
 
-4. **Board Evaluation Delta:**
-   - Positional board advantage evaluating active Speed tiers, field conditions, HP distribution, and threat pressure.
-
-5. **Match Outcome:**
-   - Win / loss terminal reward at the end of the battle.
-
----
-
-### Opponents & Baselines
-
-To give the policy consistent environments to practice against, the environment includes:
-- **`NashMatrixDoublesPlayer`:** A game-theoretic baseline that evaluates simultaneous $M \times N$ joint action payoff matrices and solves for a mixed-strategy Nash equilibrium.
-- **`StallDoublesPlayer`:** A defensive bot using Protect cycles, sleep disruption (Spore), and bulky pivots.
-- **`SimpleHeuristicsDoublesPlayer`:** A straightforward offensive bot that prioritizes STAB and high-damage coverage.
-- **`RandomDoublesPlayer`:** A random legal move baseline used for testing and sanity checks.
-
----
-
-### Getting Started
-
-#### 1. Requirements
-- Python >= 3.10
-- PyTorch >= 2.0
-- Transformers, Peft, orjson
-- Node.js >= 16 (for Pokémon Showdown)
-
-#### 2. Setting Up the Local Battle Engine
+Start a local Showdown server (it runs on `localhost:8000`):
 ```sh
 git clone https://github.com/smogon/pokemon-showdown.git
 cd pokemon-showdown
@@ -63,15 +39,13 @@ npm install
 cp config/config-example.js config/config.js
 node pokemon-showdown start --no-security
 ```
-Showdown will run locally on `localhost:8000`.
 
-#### 3. Running Training
-To run the online RL loop:
+Then train with RL (`--opponent` can be `stall`, `heuristics`, or `random`):
 ```sh
 python train_doubles_rl.py --iterations 10 --batch_size 2 --opponent stall
 ```
 
-To run supervised / preference experiments:
+Or do supervised fine-tuning on collected battle data:
 ```sh
-python train_doubles.py --model_name qwen_0_5b --stage sft
+python train_doubles.py --model_name gpt2 --data_path battle_data/doubles/doubles_sft.jsonl
 ```
